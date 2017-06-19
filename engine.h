@@ -17,7 +17,7 @@ typedef Resource *ResourceHandle;
 
 // Operations that can operate on resources.
 struct Operation;
-typedef Operatioin *OperationHandle;
+typedef Operation *OperationHandle;
 
 enum OprPriority { kNormalPriority, kHighPriority };
 
@@ -37,7 +37,7 @@ struct RunContext {
 class Engine {
 public:
   using CallbackOnComplteFn = std::function<void(Engine *, OperationHandle)>;
-  using AsyncFn = std::function<void(RunContext, CallbackOnCompleteFn)>;
+  using AsyncFn = std::function<void(RunContext, CallbackOnComplteFn)>;
   using SyncFn = std::function<void(RunContext)>;
 
   // Push an asynchronous task to the engine, the caller thread will
