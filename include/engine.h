@@ -1,126 +1,76 @@
 #ifndef NAIVE_ENGINE_ENGINE_H_
 #define NAIVE_ENGINE_ENGINE_H_
 
+#include "glog/logging.h"
 #include <iostream>
+#include <map>
 #include <memory>
+#include <string>
+#include <vector>
+using namespace std;
 
-namespace naive_engine {
+namespace engine {
 
-// Variable, a Var is a placeholder for resource, Var determines the dependency
-// relations.
-struct Var;
-// Operation, Opr is a placeholder for a real task pushed into engine.
-struct Opr;
+// Resources that can be operated.
+struct Resource;
+typedef Resource *ResourceHandle;
 
-typedef Var *VarHandle;
-typedef Opr *OprHandle;
+// Operations that can operate on resources.
+struct Operation;
+typedef Operatioin *OperationHandle;
 
-// Operation's priority.
-enum OptPriority { kNormalPriority, kHighPriority };
+enum OprPriority { kNormalPriority, kHighPriority };
 
-// Executation context.
-struct Context {
-  // ID of the device to execute on.
-  int device_id = -1;
-  // whether in GPU mode.
-  bool is_gpu = false;
-
-  OptPriority priority = kNormalPriority;
-
-}; // struct Context
-
-// Operation's property
-enum OptProperty {
-  // IO related, such as copy between CPU and GPU.
-  kIO,
-  // Common task.
-  kAsync
+enum OprProperty {
+  kAsync,
+  kCPU_Compute,
+  kGPU_Compute,
+  kCPU_GPU_Copy,
+  kGPU_CPU_Copy
 };
 
-// API for all Engine implementations.
+struct RunContext {
+  OprPriority priority;
+  OprProperty property;
+};
+
 class Engine {
 public:
-  struct CompleteCallbackFn;
+  using CallbackOnComplteFn = std::function<void(Engine *, OperationHandle)>;
+  using AsyncFn = std::function<void(RunContext, CallbackOnCompleteFn)>;
+  using SyncFn = std::function<void(RunContext)>;
 
-  // A function warps operation task.
-  using Fn = std::function<void(Context)>;
-  // Callback function to run after an async operation is finished.
-  // using CompleteCallbackFn = std::function<void()>;
-  // Async Function to call asynchronously.
-  using AsyncFn = std::function<void(Fn, CompleteCallbackFn)>;
+  // Push an asynchronous task to the engine, the caller thread will
+  // continue running.
+  virtual void PushAsync(AsyncFn fn, RunContext ctx,
+                         const std::vector<ResourceHandle> &read_res,
+                         const std::vector<ResourceHandle> &write_res) = 0;
 
-  // Get a singleton.
-  static Engine *Instance();
+  // Push a synchronous task to the engine, the caller thread will wait until
+  // the task is finished.
+  virtual void PushSync(SyncFn fn, RunContext ctx,
+                        const std::vector<ResourceHandle> &read_res,
+                        const std::vector<ResourceHandle> &write_res) = 0;
 
-  // Push an operation into engine and return, the pusher's thread will not
-  // hang.
-  //
-  // @fn: the operation.
-  // @priority: priority of the operaion.
-  virtual void Push(AsyncFn fn, Context ctx,
-                    const std::vector<VarHandle> &const_vars,
-                    const std::vector<VarHandle> &mutate_vars,
-                    const char *name = nullptr) = 0;
+  // Wait until all tasks pushed to engine are finished.
+  virtual void WaitForAllFinished() = 0;
 
-  // Register a operation's read dependency on a variable `var`,  the operation
-  // wait until `var` is ready to read.
-  virtual void RegisterReadDependency(OprHandle opr, VarHandle var) = 0;
+  // Wait for the resources ready to read.
+  virtual void WaitForResource(const std::vector<ResourceHandle> &res) = 0;
 
-  // Register a operation's write dependency on a variable `var`,  the operation
-  // wait until `var` is ready to write.
-  virtual void RegisterWriteDependency(OprHandle opr, VarHandle var) = 0;
+  // Stop all worker threads' work, and terminal all tasks.
+  virtual void Terminate() = 0;
 
-  // Finish writing the variable and delete the dependency.
-  virtual void FinishWriteDependency(OprHandle opr, VarHandle var) = 0;
+  static Engine *Get();
+};
 
-  // Finish reading the variable and delete the dependency.
-  virtual void FinishReadDependency(OprHandle opr, VarHandle var) = 0;
+struct EngineProperty {
+  int num_cpu_threads{1};
+  int num_threads_per_gpu_device{1};
+  int num_threads_gpu_copy_per_device{1};
+};
 
-  // Create a new variable.
-  virtual VarHandle NewVariable() = 0;
+static void CreateEngine(const std::string &kind, EngineProperty prop);
 
-  // Create a new operator.
-  // @name: name of the operator.
-  // @fn: AsyncFn that wrap the task.
-  // @ctx: function's execution context.
-  // @const_vars: variables that requires to read.
-  // @mutate_vars: variables that requires to write.
-  virtual OprHandle NewOperator(AsyncFn fn, Context ctx,
-                                const std::vector<VarHandle> &const_vars,
-                                const std::vector<VarHandle> &mutate_vars,
-                                const char *name = nullptr) = 0;
-
-  // Shutdown the engine and tell all work threads to quit.
-  virtual void ShutDown() = 0;
-
-  struct CompleteCallbackFn {
-    VarHandle var;
-    OprHandle opr;
-    Engine *engine;
-    bool is_read = true;
-
-    void operator()() {
-      if (is_read) {
-        engine->FinishReadDependency(opr, var);
-      } else {
-        engine->FinishWriteDependency(opr, var);
-      }
-    }
-  };
-
-protected:
-  // Create a complete callback.
-  CompleteCallbackFn CreateCompleteCallback(VarHandle var, OprHandle opr,
-                                            bool rw) {
-    CompleteCallbackFn cb;
-    cb.var = var;
-    cb.opr = opr;
-    cb.is_read = rw;
-    cb.engine = this;
-    return cb;
-  }
-
-}; // class Engine
-
-} // namespace naive_engine
+} // namespace engine
 #endif
