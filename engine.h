@@ -11,13 +11,13 @@ using namespace std;
 
 namespace engine {
 
-// Resources that can be operated.
+// Resources that can be operated on.
 struct Resource;
-typedef Resource *ResourceHandle;
+typedef std::shared_ptr<Resource> ResourceHandle;
 
 // Operations that can operate on resources.
 struct Operation;
-typedef Operation *OperationHandle;
+typedef std::shared_ptr<Operation> OperationHandle;
 
 enum OprPriority { kNormalPriority, kHighPriority };
 
@@ -42,15 +42,26 @@ public:
 
   // Push an asynchronous task to the engine, the caller thread will
   // continue running.
+  virtual void PushAsync(OperationHandle opr, RunContext ctx) = 0;
   virtual void PushAsync(AsyncFn fn, RunContext ctx,
                          const std::vector<ResourceHandle> &read_res,
-                         const std::vector<ResourceHandle> &write_res) = 0;
+                         const std::vector<ResourceHandle> &write_res) {
+    auto opr = NewOperation(fn, read_res, write_res);
+    PushAsync(opr, ctx);
+  }
 
   // Push a synchronous task to the engine, the caller thread will wait until
   // the task is finished.
   virtual void PushSync(SyncFn fn, RunContext ctx,
                         const std::vector<ResourceHandle> &read_res,
                         const std::vector<ResourceHandle> &write_res) = 0;
+
+  // Create a new operation.
+  virtual OperationHandle
+  NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
+               const std::vector<ResourceHandle> &write_res) = 0;
+  // Create a new Resource.
+  virtual ResourceHandle NewResource() = 0;
 
   // Wait until all tasks pushed to engine are finished.
   virtual void WaitForAllFinished() = 0;
@@ -70,7 +81,7 @@ struct EngineProperty {
   int num_threads_gpu_copy_per_device{1};
 };
 
-static void CreateEngine(const std::string &kind, EngineProperty prop);
-
+std::shared_ptr<Engine> CreateEngine(const std::string &kind,
+                                     EngineProperty prop);
 } // namespace engine
 #endif
