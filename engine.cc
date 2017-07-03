@@ -5,81 +5,10 @@
 #include <type_traits>
 
 #include "engine.h"
+#include "engine_impl.h"
 #include "swiftcpp/thread_utils.h"
 
 namespace engine {
-
-struct Resource {
-  template <typename T> inline T *Cast() {
-    static_assert(std::is_base_of<Resource, T>::value,
-                  "should be inherinted from Resource");
-    return static_cast<T *>(this);
-  }
-};
-
-struct Operation {
-  template <typename T> inline T *Cast() {
-    static_assert(std::is_base_of<Operation, T>::value,
-                  "should be inherinted from Operation");
-    return static_cast<T *>(this);
-  }
-};
-
-// A simple engine without thread pool, just for debug.
-class DebugEngine : public Engine {
-public:
-  DebugEngine(const std::string &name = "debug engine") : name_(name) {}
-
-  struct DebugOpr : public Operation {
-    AsyncFn fn;
-
-    DebugOpr(const AsyncFn &fn) : fn(fn) {}
-  };
-
-  virtual void PushAsync(OperationHandle opr, RunContext ctx) override {
-    auto cb = CreateCompleteCallback();
-    opr->Cast<DebugOpr>()->fn(ctx, cb);
-  }
-
-  virtual void
-  PushAsync(AsyncFn fn, RunContext ctx,
-            const std::vector<ResourceHandle> &read_res,
-            const std::vector<ResourceHandle> &write_res) override {
-    auto cb = CreateCompleteCallback();
-    fn(ctx, cb);
-  }
-
-  virtual void PushSync(SyncFn fn, RunContext ctx,
-                        const std::vector<ResourceHandle> &read_res,
-                        const std::vector<ResourceHandle> &write_res) override {
-    fn(ctx);
-  }
-
-  virtual OperationHandle
-  NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res) override {
-    return std::make_shared<DebugOpr>(fn);
-  }
-
-  // Create a new Resource.
-  virtual ResourceHandle NewResource() override { return nullptr; }
-
-  virtual void WaitForAllFinished() override {}
-
-  virtual void
-  WaitForResource(const std::vector<ResourceHandle> &res) override {}
-
-  virtual void Terminate() override {
-    LOG(WARNING) << "DebugEngine terminated";
-  }
-
-  static CallbackOnComplteFn CreateCompleteCallback() {
-    return CallbackOnComplteFn();
-  }
-
-private:
-  std::string name_;
-};
 
 // ----------------------------------------------------------------------------
 // Multi-thread Engine
@@ -203,7 +132,7 @@ public:
   virtual void PushSync(SyncFn fn, RunContext ctx,
                         const std::vector<ResourceHandle> &read_res,
                         const std::vector<ResourceHandle> &write_res) override {
-    AsyncFn afn = [&](RunContext ctx, CallbackOnComplteFn cb) { fn(ctx); };
+    AsyncFn afn = [&](RunContext ctx, CallbackOnComplete cb) { fn(ctx); };
     auto opr = NewOperation(afn, read_res, write_res);
     PushAsync(opr, ctx);
   }
@@ -233,9 +162,9 @@ public:
   // Push the opr to device and execute it.
   virtual void PushToExecute(OperationHandle opr) = 0;
 
-  static CallbackOnComplteFn CreateCompleteCallback(Engine *,
-                                                    OperationHandle opr) {
-    return [=](Engine *engine, OperationHandle opr) {
+  static CallbackOnComplete CreateCompleteCallback(Engine *engine,
+                                                   OperationHandle opr) {
+    static CallbackOnComplete::Fn fn = [](OperationHandle opr) {
       auto ptr = opr->Cast<ThreadedOperation>();
       for (const auto &var : ptr->read_res) {
         var->Cast<ThreadedResource>()->FinishedDependency(opr, false);
@@ -244,6 +173,7 @@ public:
         var->Cast<ThreadedResource>()->FinishedDependency(opr, false);
       }
     };
+    return CallbackOnComplete(opr, &fn, engine);
   }
 
 protected:
@@ -314,7 +244,7 @@ void MultiThreadEnginePooled::PushToExecute(OperationHandle opr) {
 }
 
 std::shared_ptr<Engine> CreateEngine(const std::string &kind,
-                                            EngineProperty prop) {
+                                     EngineProperty prop) {
   if (kind == "DebugEngine") {
     return std::make_shared<DebugEngine>();
   } else if (kind == "MultiThreadEnginePooled") {

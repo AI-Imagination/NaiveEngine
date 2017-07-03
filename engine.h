@@ -1,5 +1,4 @@
-#ifndef NAIVE_ENGINE_ENGINE_H_
-#define NAIVE_ENGINE_ENGINE_H_
+#pragma once
 
 #include "glog/logging.h"
 #include <iostream>
@@ -34,10 +33,24 @@ struct RunContext {
   OprProperty property;
 };
 
+class Engine;
+struct CallbackOnComplete {
+  using Fn = std::function<void(OperationHandle)>;
+  OperationHandle opr{nullptr};
+  // Use a pointer to make the callback' reuse cheapper.
+  Fn *cb{nullptr};
+  Engine *engine{nullptr};
+
+  CallbackOnComplete(OperationHandle opr, Fn *cb, Engine *engine)
+      : opr(opr), cb(cb), engine(engine) {}
+
+  void operator()() const { (*cb)(opr); }
+};
+
 class Engine {
 public:
-  using CallbackOnComplteFn = std::function<void(Engine *, OperationHandle)>;
-  using AsyncFn = std::function<void(RunContext, CallbackOnComplteFn)>;
+  // using CallbackOnComplete = std::function<void(Engine *, OperationHandle)>;
+  using AsyncFn = std::function<void(RunContext, CallbackOnComplete)>;
   using SyncFn = std::function<void(RunContext)>;
 
   // Push an asynchronous task to the engine, the caller thread will
@@ -84,4 +97,3 @@ struct EngineProperty {
 std::shared_ptr<Engine> CreateEngine(const std::string &kind,
                                      EngineProperty prop);
 } // namespace engine
-#endif
