@@ -5,18 +5,38 @@
 namespace engine {
 
 struct Resource {
+#ifndef NDEBUG
+  Resource() {}
+  virtual ~Resource() {}
+#endif
   template <typename T> inline T *Cast() {
     static_assert(std::is_base_of<Resource, T>::value,
                   "should be inherinted from Resource");
+#ifdef NDEBUG
     return static_cast<T *>(this);
+#else
+    auto ptr = dynamic_cast<T *>(this);
+    CHECK(ptr);
+    return ptr;
+#endif
   }
 };
 
 struct Operation {
+#ifndef NDEBUG
+  Operation() {}
+  virtual ~Operation() {}
+#endif
   template <typename T> inline T *Cast() {
     static_assert(std::is_base_of<Operation, T>::value,
                   "should be inherinted from Operation");
+#ifdef NDEBUG
     return static_cast<T *>(this);
+#else
+    auto ptr = dynamic_cast<T *>(this);
+    CHECK(ptr) << "wrong operation type";
+    return ptr;
+#endif
   }
 };
 

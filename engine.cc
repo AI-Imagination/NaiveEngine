@@ -24,14 +24,18 @@ struct ThreadedOperation : public Operation {
   RunContext ctx;
   Engine *engine;
   // Some resources are ready.
-  void TellResReady(int num = 1) { noready_resource_count_ -= num; }
+  void TellResReady(int num = 1) {
+    noready_resource_count_ -= num;
+    DLOG(INFO) << "tell res ready :" << noready_resource_count_;
+  }
   // Whether the operation is ready to run.
   bool ReadyToExecute() { return noready_resource_count_ == 0; }
 
-  ThreadedOperation(const Engine::AsyncFn &fn,
+  ThreadedOperation(Engine *engine, const Engine::AsyncFn &fn,
                     const std::vector<ResourceHandle> &read_res,
                     const std::vector<ResourceHandle> &write_res)
-      : fn(fn), read_res(read_res), write_res(write_res) {}
+      : engine(engine), fn(fn), read_res(read_res), write_res(write_res),
+        noready_resource_count_(read_res.size() + write_res.size()) {}
 
 private:
   // Number of resources that is not ready for this operation.
@@ -68,6 +72,7 @@ private:
 };
 
 void ThreadedResource::AppendDependency(OperationHandle opr, bool is_write) {
+  DLOG(INFO) << "append " << (is_write ? " write " : " read ") << " dependency";
   std::lock_guard<std::mutex> l(mut_);
   queue_.emplace_back(opr, is_write);
 
@@ -89,22 +94,28 @@ void ThreadedResource::FinishedDependency(OperationHandle opr, bool is_write) {
 void ThreadedResource::ProcessQueueFront() {
   if (pending_read_count_ > 0 || pending_write_)
     return;
+  if (queue_.empty())
+    return;
 
   // front is wirte operation
   if (queue_.front().is_write) {
-    if (pending_read_count_ > 0)
+    if (pending_read_count_ > 0) {
       return;
-    // dispatch write operation
+    }
+    // write dependency is ready.
     auto opr = queue_.front().operation;
     auto topr = opr->template Cast<ThreadedOperation>();
+    topr->TellResReady();
     if (topr->ReadyToExecute()) {
+      DLOG(INFO) << "to dispatch";
+      // dispatch write operation
       dispatcher_(opr);
     }
     pending_write_ = true;
     queue_.pop_front();
     // read operation
   } else {
-    while (!queue_.front().is_write) {
+    while (!queue_.empty() && !queue_.front().is_write) {
       auto opr = queue_.front().operation->template Cast<ThreadedOperation>();
       opr->TellResReady();
       if (opr->ReadyToExecute()) {
@@ -118,12 +129,20 @@ void ThreadedResource::ProcessQueueFront() {
 class MultiThreadEngine : public Engine {
 public:
   virtual void PushAsync(OperationHandle opr, RunContext ctx) override {
-    auto dispatcher = [this](OperationHandle opr) { this->PushToExecute(opr); };
+    num_pending_tasks_++;
+    auto dispatcher = [this](OperationHandle opr) {
+      DLOG(INFO) << "dispatch the opr";
+      this->PushToExecute(opr);
+    };
     auto topr = opr->Cast<ThreadedOperation>();
     topr->ctx = ctx;
+    DLOG(INFO) << "register read resources";
     for (auto res : topr->read_res) {
+      DLOG(INFO) << "res";
+      CHECK(res);
       res->template Cast<ThreadedResource>()->AppendDependency(opr, false);
     }
+    DLOG(INFO) << "register write resources";
     for (auto res : topr->write_res) {
       res->template Cast<ThreadedResource>()->AppendDependency(opr, true);
     }
@@ -144,13 +163,14 @@ public:
   virtual OperationHandle
   NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
                const std::vector<ResourceHandle> &write_res) override {
-    return std::make_shared<ThreadedOperation>(fn, read_res, write_res);
+    return std::make_shared<ThreadedOperation>(this, fn, read_res, write_res);
   }
 
   virtual void WaitForAllFinished() override {
     std::unique_lock<std::mutex> l(mut_);
     finish_cond_.wait(
         l, [this]() { return num_pending_tasks_ == 0 || terminated_; });
+    DLOG(INFO) << "WaitForAllFinished done";
   }
 
   virtual void
@@ -164,7 +184,7 @@ public:
 
   static CallbackOnComplete CreateCompleteCallback(Engine *engine,
                                                    OperationHandle opr) {
-    static CallbackOnComplete::Fn fn = [](OperationHandle opr) {
+    static CallbackOnComplete::Fn fn = [engine](OperationHandle opr) {
       auto ptr = opr->Cast<ThreadedOperation>();
       for (const auto &var : ptr->read_res) {
         var->Cast<ThreadedResource>()->FinishedDependency(opr, false);
@@ -172,6 +192,9 @@ public:
       for (const auto &var : ptr->write_res) {
         var->Cast<ThreadedResource>()->FinishedDependency(opr, false);
       }
+      auto engine_ptr = static_cast<MultiThreadEngine *>(engine);
+      engine_ptr->num_pending_tasks_--;
+      engine_ptr->finish_cond_.notify_all();
     };
     return CallbackOnComplete(opr, &fn, engine);
   }
@@ -197,10 +220,16 @@ template <typename OprType> struct ThreadQueueBlock {
       : workers(n_threads, [this] {
           OperationHandle o;
           bool suc = task_queue.Pop(&o);
+          if (!suc) {
+            DLOG(WARNING) << "thread " << std::this_thread::get_id()
+                          << " stop ...";
+            return;
+          }
           auto ptr = o->Cast<OprType>();
           auto engine = ptr->engine;
           auto complete_callback =
               MultiThreadEngine::CreateCompleteCallback(ptr->engine, o);
+          CHECK(ptr->fn);
           ptr->fn(ptr->ctx, complete_callback);
         }) {}
 
@@ -213,6 +242,7 @@ public:
   MultiThreadEnginePooled(int n_common_threads = 10, int n_io_threads = 1)
       : common_task_workers_(n_common_threads), io_task_workers_(n_io_threads) {
   }
+  ~MultiThreadEnginePooled() { Terminate(); }
   virtual ResourceHandle NewResource() override;
   virtual void PushToExecute(OperationHandle opr) override;
   virtual void Terminate() override;
@@ -224,22 +254,30 @@ private:
 
 ResourceHandle MultiThreadEnginePooled::NewResource() {
   ThreadedResource::Dispatcher dispatcher = [this](OperationHandle opr) {
+    DLOG(INFO) << "dispatch using PushToExecute";
     PushToExecute(opr);
   };
   return std::make_shared<ThreadedResource>(dispatcher);
 }
 
 void MultiThreadEnginePooled::Terminate() {
-  terminated_ = true;
-  common_task_workers_.task_queue.SignalForKill();
-  io_task_workers_.task_queue.SignalForKill();
+  if (!terminated_) {
+    DLOG(WARNING) << "MultiThreadEnginePooled terminated.";
+    terminated_ = true;
+    common_task_workers_.task_queue.SignalForKill();
+    io_task_workers_.task_queue.SignalForKill();
+  }
 }
 
 void MultiThreadEnginePooled::PushToExecute(OperationHandle opr) {
   auto ptr = opr->Cast<ThreadedOperation>();
   if (ptr->ctx.property == kCPU_GPU_Copy ||
       ptr->ctx.property == kGPU_CPU_Copy) {
+    DLOG(INFO) << "io task queue get a task";
     io_task_workers_.task_queue.Push(opr);
+  } else {
+    DLOG(INFO) << "common task queue get a task";
+    common_task_workers_.task_queue.Push(opr);
   }
 }
 
