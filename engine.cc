@@ -17,65 +17,103 @@ namespace engine {
 // ----------------------------------------------------------------------------
 void ThreadedResource::AppendDependency(OperationHandle opr, bool is_write) {
   DLOG(INFO) << "append " << (is_write ? " write " : " read ") << " dependency";
-  std::lock_guard<std::mutex> l(mut_);
-  queue_.emplace_back(opr, is_write);
+  {
+    std::lock_guard<std::mutex> l(mut_);
+    DLOG(INFO) << "t " << std::this_thread::get_id() << " enter";
+    queue_.emplace_back(opr, is_write);
 
-  ProcessQueueFront();
+    ProcessQueueFront();
+    DLOG(INFO) << "t " << std::this_thread::get_id() << " leave";
+  }
 }
 
 void ThreadedResource::FinishedDependency(OperationHandle opr, bool is_write) {
+  DLOG(INFO) << "finish dependency " << name_;
   std::lock_guard<std::mutex> l(mut_);
-  if (is_write) {
-    pending_write_ = false;
-  } else {
-    pending_read_count_--;
-  }
+  {
+    DLOG(INFO) << "t " << std::this_thread::get_id() << " enter";
+    if (is_write) {
+      pending_write_ = false;
+    } else {
+      pending_read_count_--;
+    }
 
-  ProcessQueueFront();
+    ProcessQueueFront();
+    DLOG(INFO) << "t " << std::this_thread::get_id() << " leave";
+  }
+  DLOG(INFO) << debug_string();
+}
+
+// NOTE Not thread safe.
+void ThreadedResource::ProcessQueueFront() {
+#if ENGINE_DEBUG
+  if (!queue_.empty()) {
+    if (queue_.front().is_write) {
+      CHECK(pending_read_count_.load() >= 0)
+          << "value: " << pending_read_count_;
+    }
+  }
+#endif
+  DLOG(INFO) << "process queue front";
+  if (queue_.empty())
+    return;
+  // front is write, and more read operations is running
+  if (pending_read_count_ > 0 && queue_.front().is_write)
+    return;
+  // a write operation is running and not finished.
+  if (pending_write_)
+    return;
+
+  DLOG(INFO) << "continue to check queue";
+  // front is wirte operation
+  if (queue_.front().is_write) {
+    if (pending_read_count_ > 0) {
+      return;
+    }
+    // write dependency is ready, dispatch this write operation and update
+    // pending_write_
+    auto opr = queue_.front().operation;
+    auto topr = opr->template Cast<ThreadedOperation>();
+    {
+      std::lock_guard<std::mutex> l(opr_mut);
+      topr->TellResReady(1, name_);
+      if (topr->ReadyToExecute()) {
+        // dispatch write operation
+        dispatcher_(opr);
+      }
+    }
+    queue_.pop_front();
+    pending_write_ = true;
+    CHECK(pending_read_count_ == 0);
+    // read operation
+  } else {
+    while (!queue_.empty() && !queue_.front().is_write && !pending_write_) {
+      pending_read_count_++;
+      auto opr = queue_.front().operation->template Cast<ThreadedOperation>();
+
+      {
+        std::lock_guard<std::mutex> l(opr_mut);
+        opr->TellResReady(1, name_);
+        if (opr->ReadyToExecute()) {
+          dispatcher_(queue_.front().operation);
+        }
+      }
+      queue_.pop_front();
+    }
+    DLOG(INFO) << "ProcessHead:\t" << debug_string();
+  }
 }
 
 std::string ThreadedResource::debug_string() const {
   std::stringstream ss;
   ss << "Var " << name_ << " size: " << queue_.size();
   for (auto &opr : queue_) {
-    ss << "\t" << opr.operation->Cast<ThreadedOperation>()->name << " ";
+    auto opr_ptr = opr.operation->Cast<ThreadedOperation>();
+    ss << "\t" << opr_ptr->name << ":" << opr.is_write << " "
+       << "\tpending_read:" << pending_read_count_ << "\tpending_write"
+       << pending_write_ << "\n";
   }
   return ss.str();
-}
-
-// NOTE Not thread safe.
-void ThreadedResource::ProcessQueueFront() {
-  if (pending_read_count_ > 0 && pending_write_)
-    return;
-  if (queue_.empty())
-    return;
-
-  // front is wirte operation
-  if (queue_.front().is_write) {
-    if (pending_read_count_ > 0) {
-      return;
-    }
-    // write dependency is ready.
-    auto opr = queue_.front().operation;
-    auto topr = opr->template Cast<ThreadedOperation>();
-    topr->TellResReady();
-    if (topr->ReadyToExecute()) {
-      // dispatch write operation
-      dispatcher_(opr);
-    }
-    pending_write_ = true;
-    queue_.pop_front();
-    // read operation
-  } else {
-    while (!queue_.empty() && !queue_.front().is_write) {
-      auto opr = queue_.front().operation->template Cast<ThreadedOperation>();
-      opr->TellResReady();
-      if (opr->ReadyToExecute()) {
-        dispatcher_(queue_.front().operation);
-      }
-      queue_.pop_front();
-    }
-  }
 }
 
 class MultiThreadEngine : public Engine {
@@ -93,12 +131,10 @@ public:
     };
     auto topr = opr->Cast<ThreadedOperation>();
     topr->ctx = ctx;
-    DLOG(INFO) << "register read resources";
     for (auto res : topr->read_res) {
       CHECK(res);
       res->template Cast<ThreadedResource>()->AppendDependency(opr, false);
     }
-    DLOG(INFO) << "register write resources";
     for (auto res : topr->write_res) {
       res->template Cast<ThreadedResource>()->AppendDependency(opr, true);
     }
@@ -119,7 +155,6 @@ public:
     auto opr = std::make_shared<ThreadedOperation>(this, fn, read_res,
                                                    write_res, name);
     CHECK_EQ(opr->Cast<ThreadedOperation>()->engine, (void *)this);
-    CHECK_EQ((void *)this, this);
     return opr;
   }
 
@@ -164,17 +199,15 @@ public:
 
 protected:
   void inc_num_padding_tasks() {
+    inc_count++;
     int i = num_pending_tasks_;
     num_pending_tasks_++;
-    DLOG(INFO) << "engine: " << this << " inc pedding tasks " << i << " "
-               << num_pending_tasks_;
   }
   void dec_num_padding_tasks() {
-    int i = num_pending_tasks_;
+    dec_count++;
     num_pending_tasks_--;
-    DLOG(INFO) << "engine: " << this << " dec pedding tasks " << i << " "
-               << num_pending_tasks_;
-
+    DLOG(INFO) << " engine pedding tasks: " << num_pending_tasks_ << " "
+               << inc_count << " " << dec_count;
     finish_cond_.notify_all();
   }
   // NOTE should be updated by Terminate method.
@@ -187,6 +220,8 @@ protected:
   std::condition_variable finish_cond_;
   std::atomic<uint64_t> sync_counter_;
   std::mutex mut_;
+  int inc_count{0};
+  int dec_count{0};
 };
 
 // ----------------------------------------------------------------------------
@@ -236,6 +271,8 @@ private:
 
 ResourceHandle MultiThreadEnginePooled::NewResource(const std::string &name) {
   ThreadedResource::Dispatcher dispatcher = [this](OperationHandle opr) {
+    DLOG(INFO) << "thread " << std::this_thread::get_id() << " dispatch opr "
+               << opr->Cast<ThreadedOperation>()->name;
     PushToExecute(opr);
   };
   return std::make_shared<ThreadedResource>(dispatcher, name);

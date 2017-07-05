@@ -13,6 +13,8 @@ using namespace std;
 #undef NDEBUG
 #endif
 
+#define ENGINE_DEBUG 1
+
 namespace engine {
 
 // Resources that can be operated on.

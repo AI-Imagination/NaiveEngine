@@ -1,6 +1,8 @@
 #pragma once
 
 #include <deque>
+#include <gtest/gtest_prod.h>
+#include <thread>
 
 #include "engine.h"
 
@@ -107,6 +109,8 @@ private:
   std::string name_;
 };
 
+static std::mutex opr_mut;
+
 struct ThreadedOperation : public Operation {
   Engine::AsyncFn fn;
   // Resources that require to read.
@@ -119,12 +123,14 @@ struct ThreadedOperation : public Operation {
   RunContext ctx;
   Engine *engine;
   // Some resources are ready.
-  void TellResReady(int num = 1) {
+  void TellResReady(int num = 1, const std::string &name = "") {
     noready_resource_count_ -= num;
-    DLOG(INFO) << "tell res ready :" << noready_resource_count_;
+    DLOG(INFO) << this->name << " res " << name << " ready, still need "
+               << noready_resource_count_ << " t "
+               << std::this_thread::get_id();
   }
   // Whether the operation is ready to run.
-  bool ReadyToExecute() { return noready_resource_count_ == 0; }
+  bool ReadyToExecute() { return noready_resource_count_.load() == 0; }
 
   ThreadedOperation(Engine *engine, const Engine::AsyncFn &fn,
                     const std::vector<ResourceHandle> &read_res,
@@ -132,11 +138,23 @@ struct ThreadedOperation : public Operation {
                     const std::string &name = "")
       : engine(engine), fn(fn), read_res(read_res), write_res(write_res),
         noready_resource_count_(read_res.size() + write_res.size()),
-        name(name) {}
+        name(name) {
+    CHECK_GT(noready_resource_count_, 0)
+        << "more than one resource dependency is needed.";
+  }
+
+  friend class ThreadedOperationTestHelper;
 
 private:
   // Number of resources that is not ready for this operation.
   std::atomic<int> noready_resource_count_{0};
+};
+
+class ThreadedOperationTestHelper {
+public:
+  int noready_resource_count(OperationHandle opr) {
+    return opr->Cast<ThreadedOperation>()->noready_resource_count_;
+  }
 };
 
 // A FIFO queue for a Resource, which records all the operation dependency.
@@ -155,8 +173,11 @@ public:
   // Human-readable string.
   std::string debug_string() const;
 
+  const std::string &name() const { return name_; }
+
 protected:
   template void ProcessQueueFront();
+  friend class ThreadedResourceTestHelper;
 
 private:
   struct ResourceBlock {
@@ -172,6 +193,19 @@ private:
   std::mutex mut_;
   std::string name_;
   Dispatcher dispatcher_;
+};
+
+class ThreadedResourceTestHelper {
+public:
+  int pending_read_count(ResourceHandle res) {
+    return res->Cast<ThreadedResource>()->pending_read_count_;
+  }
+  int pending_write(ResourceHandle res) {
+    return res->Cast<ThreadedResource>()->pending_write_;
+  }
+  int queue_size(ResourceHandle res) {
+    return res->Cast<ThreadedResource>()->queue_.size();
+  }
 };
 
 } // namespace engine
