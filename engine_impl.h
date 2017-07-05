@@ -1,5 +1,7 @@
 #pragma once
 
+#include <deque>
+
 #include "engine.h"
 
 namespace engine {
@@ -38,6 +40,7 @@ struct Operation {
     return ptr;
 #endif
   }
+  std::string name;
 };
 
 // A simple engine without thread pool, just for debug.
@@ -72,13 +75,16 @@ public:
 
   virtual OperationHandle
   NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res) override {
+               const std::vector<ResourceHandle> &write_res,
+               const std::string &name = "") override {
     DLOG(INFO) << "DebugEngine new operation";
     return std::make_shared<DebugOpr>(fn);
   }
 
   // Create a new Resource.
-  virtual ResourceHandle NewResource() override { return nullptr; }
+  virtual ResourceHandle NewResource(const std::string &name = "") override {
+    return nullptr;
+  }
 
   virtual void WaitForAllFinished() override {}
 
@@ -99,6 +105,73 @@ public:
 
 private:
   std::string name_;
+};
+
+struct ThreadedOperation : public Operation {
+  Engine::AsyncFn fn;
+  // Resources that require to read.
+  std::vector<ResourceHandle> read_res;
+  // Resources that require to write.
+  std::vector<ResourceHandle> write_res;
+  // Name for debug.
+  std::string name;
+  // Runing context.
+  RunContext ctx;
+  Engine *engine;
+  // Some resources are ready.
+  void TellResReady(int num = 1) {
+    noready_resource_count_ -= num;
+    DLOG(INFO) << "tell res ready :" << noready_resource_count_;
+  }
+  // Whether the operation is ready to run.
+  bool ReadyToExecute() { return noready_resource_count_ == 0; }
+
+  ThreadedOperation(Engine *engine, const Engine::AsyncFn &fn,
+                    const std::vector<ResourceHandle> &read_res,
+                    const std::vector<ResourceHandle> &write_res,
+                    const std::string &name = "")
+      : engine(engine), fn(fn), read_res(read_res), write_res(write_res),
+        noready_resource_count_(read_res.size() + write_res.size()),
+        name(name) {}
+
+private:
+  // Number of resources that is not ready for this operation.
+  std::atomic<int> noready_resource_count_{0};
+};
+
+// A FIFO queue for a Resource, which records all the operation dependency.
+class ThreadedResource : public Resource {
+public:
+  using Dispatcher = std::function<void(OperationHandle)>;
+
+  ThreadedResource(const Dispatcher &dispatcher, const std::string &name = "")
+      : dispatcher_(dispatcher), name_(name) {}
+  // Append a read/write denpendency to the queue.
+  void AppendDependency(OperationHandle opr, bool is_write);
+
+  // Finish a read/write dependency to the queue.
+  void FinishedDependency(OperationHandle opr, bool is_write);
+
+  // Human-readable string.
+  std::string debug_string() const;
+
+protected:
+  template void ProcessQueueFront();
+
+private:
+  struct ResourceBlock {
+    OperationHandle operation;
+    bool is_write{false};
+    ResourceBlock(OperationHandle operation, bool is_write)
+        : operation(operation), is_write(is_write) {}
+  };
+
+  std::deque<ResourceBlock> queue_;
+  std::atomic<int> pending_read_count_{0};
+  std::atomic<bool> pending_write_{false};
+  std::mutex mut_;
+  std::string name_;
+  Dispatcher dispatcher_;
 };
 
 } // namespace engine

@@ -8,6 +8,11 @@
 #include <vector>
 using namespace std;
 
+#define USE_PROFILE 1
+#if USE_PROFILE
+#undef NDEBUG
+#endif
+
 namespace engine {
 
 // Resources that can be operated on.
@@ -39,9 +44,9 @@ struct CallbackOnComplete {
   OperationHandle opr{nullptr};
   // Use a pointer to make the callback' reuse cheapper.
   Fn *cb{nullptr};
-  Engine *engine{nullptr};
+  void *engine{nullptr};
 
-  CallbackOnComplete(OperationHandle opr, Fn *cb, Engine *engine)
+  CallbackOnComplete(OperationHandle opr, Fn *cb, void *engine)
       : opr(opr), cb(cb), engine(engine) {}
 
   void operator()() const { (*cb)(opr); }
@@ -49,7 +54,6 @@ struct CallbackOnComplete {
 
 class Engine {
 public:
-  // using CallbackOnComplete = std::function<void(Engine *, OperationHandle)>;
   using AsyncFn = std::function<void(RunContext, CallbackOnComplete)>;
   using SyncFn = std::function<void(RunContext)>;
 
@@ -72,9 +76,10 @@ public:
   // Create a new operation.
   virtual OperationHandle
   NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res) = 0;
+               const std::vector<ResourceHandle> &write_res,
+               const std::string &name = "") = 0;
   // Create a new Resource.
-  virtual ResourceHandle NewResource() = 0;
+  virtual ResourceHandle NewResource(const std::string &name = "") = 0;
 
   // Wait until all tasks pushed to engine are finished.
   virtual void WaitForAllFinished() = 0;

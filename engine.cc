@@ -2,10 +2,12 @@
 #include <deque>
 #include <glog/logging.h>
 #include <memory>
+#include <sstream>
 #include <type_traits>
 
 #include "engine.h"
 #include "engine_impl.h"
+#include "profile.h"
 #include "swiftcpp/thread_utils.h"
 
 namespace engine {
@@ -13,64 +15,6 @@ namespace engine {
 // ----------------------------------------------------------------------------
 // Multi-thread Engine
 // ----------------------------------------------------------------------------
-
-struct ThreadedOperation : public Operation {
-  Engine::AsyncFn fn;
-  // Resources that require to read.
-  std::vector<ResourceHandle> read_res;
-  // Resources that require to write.
-  std::vector<ResourceHandle> write_res;
-  // Runing context.
-  RunContext ctx;
-  Engine *engine;
-  // Some resources are ready.
-  void TellResReady(int num = 1) {
-    noready_resource_count_ -= num;
-    DLOG(INFO) << "tell res ready :" << noready_resource_count_;
-  }
-  // Whether the operation is ready to run.
-  bool ReadyToExecute() { return noready_resource_count_ == 0; }
-
-  ThreadedOperation(Engine *engine, const Engine::AsyncFn &fn,
-                    const std::vector<ResourceHandle> &read_res,
-                    const std::vector<ResourceHandle> &write_res)
-      : engine(engine), fn(fn), read_res(read_res), write_res(write_res),
-        noready_resource_count_(read_res.size() + write_res.size()) {}
-
-private:
-  // Number of resources that is not ready for this operation.
-  std::atomic<int> noready_resource_count_{0};
-};
-
-// A FIFO queue for a Resource, which records all the operation dependency.
-class ThreadedResource : public Resource {
-public:
-  using Dispatcher = std::function<void(OperationHandle)>;
-
-  ThreadedResource(const Dispatcher &dispatcher) : dispatcher_(dispatcher) {}
-  // Append a read denpendency to the queue;
-  void AppendDependency(OperationHandle opr, bool is_write);
-
-  void FinishedDependency(OperationHandle opr, bool is_write);
-
-protected:
-  template void ProcessQueueFront();
-
-private:
-  struct ResourceBlock {
-    OperationHandle operation;
-    bool is_write{false};
-    ResourceBlock(OperationHandle operation, bool is_write)
-        : operation(operation), is_write(is_write) {}
-  };
-
-  std::deque<ResourceBlock> queue_;
-  std::atomic<int> pending_read_count_{0};
-  std::atomic<bool> pending_write_{false};
-  std::mutex mut_;
-  Dispatcher dispatcher_;
-};
-
 void ThreadedResource::AppendDependency(OperationHandle opr, bool is_write) {
   DLOG(INFO) << "append " << (is_write ? " write " : " read ") << " dependency";
   std::lock_guard<std::mutex> l(mut_);
@@ -80,19 +24,28 @@ void ThreadedResource::AppendDependency(OperationHandle opr, bool is_write) {
 }
 
 void ThreadedResource::FinishedDependency(OperationHandle opr, bool is_write) {
+  std::lock_guard<std::mutex> l(mut_);
   if (is_write) {
     pending_write_ = false;
   } else {
     pending_read_count_--;
   }
 
-  std::lock_guard<std::mutex> l(mut_);
   ProcessQueueFront();
+}
+
+std::string ThreadedResource::debug_string() const {
+  std::stringstream ss;
+  ss << "Var " << name_ << " size: " << queue_.size();
+  for (auto &opr : queue_) {
+    ss << "\t" << opr.operation->Cast<ThreadedOperation>()->name << " ";
+  }
+  return ss.str();
 }
 
 // NOTE Not thread safe.
 void ThreadedResource::ProcessQueueFront() {
-  if (pending_read_count_ > 0 || pending_write_)
+  if (pending_read_count_ > 0 && pending_write_)
     return;
   if (queue_.empty())
     return;
@@ -107,7 +60,6 @@ void ThreadedResource::ProcessQueueFront() {
     auto topr = opr->template Cast<ThreadedOperation>();
     topr->TellResReady();
     if (topr->ReadyToExecute()) {
-      DLOG(INFO) << "to dispatch";
       // dispatch write operation
       dispatcher_(opr);
     }
@@ -129,7 +81,12 @@ void ThreadedResource::ProcessQueueFront() {
 class MultiThreadEngine : public Engine {
 public:
   virtual void PushAsync(OperationHandle opr, RunContext ctx) override {
-    num_pending_tasks_++;
+    DLOG(INFO) << "push a func " << opr->Cast<ThreadedOperation>()->name;
+#if USE_PROFILE
+    auto opr_name = opr->Cast<ThreadedOperation>()->name;
+    profile::Profiler::Get()->AddPushAction(opr_name);
+#endif
+    inc_num_padding_tasks();
     auto dispatcher = [this](OperationHandle opr) {
       DLOG(INFO) << "dispatch the opr";
       this->PushToExecute(opr);
@@ -138,7 +95,6 @@ public:
     topr->ctx = ctx;
     DLOG(INFO) << "register read resources";
     for (auto res : topr->read_res) {
-      DLOG(INFO) << "res";
       CHECK(res);
       res->template Cast<ThreadedResource>()->AppendDependency(opr, false);
     }
@@ -156,14 +112,15 @@ public:
     PushAsync(opr, ctx);
   }
 
-  // virtual ResourceHandle NewResource() override {
-  //   return std::make_shared<ThreadedResource>();
-  // }
-
   virtual OperationHandle
   NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res) override {
-    return std::make_shared<ThreadedOperation>(this, fn, read_res, write_res);
+               const std::vector<ResourceHandle> &write_res,
+               const std::string &name = "") override {
+    auto opr = std::make_shared<ThreadedOperation>(this, fn, read_res,
+                                                   write_res, name);
+    CHECK_EQ(opr->Cast<ThreadedOperation>()->engine, (void *)this);
+    CHECK_EQ((void *)this, this);
+    return opr;
   }
 
   virtual void WaitForAllFinished() override {
@@ -182,30 +139,50 @@ public:
   // Push the opr to device and execute it.
   virtual void PushToExecute(OperationHandle opr) = 0;
 
-  static CallbackOnComplete CreateCompleteCallback(Engine *engine,
+  static CallbackOnComplete CreateCompleteCallback(const void *engine,
                                                    OperationHandle opr) {
-    static CallbackOnComplete::Fn fn = [engine](OperationHandle opr) {
+    DLOG(INFO) << "create Callback engine " << engine;
+    CHECK_EQ(opr->Cast<ThreadedOperation>()->engine, engine);
+    static CallbackOnComplete::Fn fn = [](OperationHandle opr) {
+      auto engine = opr->Cast<ThreadedOperation>()->engine;
       auto ptr = opr->Cast<ThreadedOperation>();
       for (const auto &var : ptr->read_res) {
         var->Cast<ThreadedResource>()->FinishedDependency(opr, false);
       }
       for (const auto &var : ptr->write_res) {
-        var->Cast<ThreadedResource>()->FinishedDependency(opr, false);
+        var->Cast<ThreadedResource>()->FinishedDependency(opr, true);
       }
       auto engine_ptr = static_cast<MultiThreadEngine *>(engine);
-      engine_ptr->num_pending_tasks_--;
-      engine_ptr->finish_cond_.notify_all();
+      engine_ptr->dec_num_padding_tasks();
+#if USE_PROFILE
+      profile::Profiler::Get()->AddFinishAction(
+          opr->Cast<ThreadedOperation>()->name);
+#endif
     };
-    return CallbackOnComplete(opr, &fn, engine);
+    return CallbackOnComplete(opr, &fn, (void *)engine);
   }
 
 protected:
+  void inc_num_padding_tasks() {
+    int i = num_pending_tasks_;
+    num_pending_tasks_++;
+    DLOG(INFO) << "engine: " << this << " inc pedding tasks " << i << " "
+               << num_pending_tasks_;
+  }
+  void dec_num_padding_tasks() {
+    int i = num_pending_tasks_;
+    num_pending_tasks_--;
+    DLOG(INFO) << "engine: " << this << " dec pedding tasks " << i << " "
+               << num_pending_tasks_;
+
+    finish_cond_.notify_all();
+  }
   // NOTE should be updated by Terminate method.
   // Whether the engine is terminated.
   std::atomic<bool> terminated_{false};
   // number of tasks in engine.
   // NOTE should be updated in CallbackOnComplted.
-  std::atomic<int> num_pending_tasks_;
+  std::atomic<int> num_pending_tasks_{0};
   // Condition variable used to determine whether all the tasks are finished.
   std::condition_variable finish_cond_;
   std::atomic<uint64_t> sync_counter_;
@@ -219,18 +196,23 @@ template <typename OprType> struct ThreadQueueBlock {
   ThreadQueueBlock(int n_threads)
       : workers(n_threads, [this] {
           OperationHandle o;
-          bool suc = task_queue.Pop(&o);
-          if (!suc) {
-            DLOG(WARNING) << "thread " << std::this_thread::get_id()
-                          << " stop ...";
-            return;
+          while (true) {
+            bool suc = task_queue.Pop(&o);
+            if (!suc) {
+              DLOG(WARNING)
+                  << "thread " << std::this_thread::get_id() << " stop ...";
+              return;
+            }
+            // DLOG(INFO) << "queue.size: " << task_queue.Size();
+            auto ptr = o->Cast<OprType>();
+            auto engine = ptr->engine;
+            auto complete_callback =
+                MultiThreadEngine::CreateCompleteCallback(engine, o);
+            CHECK_EQ(complete_callback.engine, engine);
+            CHECK(ptr->fn);
+            DLOG(INFO) << "task " << ptr->name << " execute";
+            ptr->fn(ptr->ctx, complete_callback);
           }
-          auto ptr = o->Cast<OprType>();
-          auto engine = ptr->engine;
-          auto complete_callback =
-              MultiThreadEngine::CreateCompleteCallback(ptr->engine, o);
-          CHECK(ptr->fn);
-          ptr->fn(ptr->ctx, complete_callback);
         }) {}
 
   swiftcpp::thread::TaskQueue<OperationHandle> task_queue;
@@ -243,7 +225,7 @@ public:
       : common_task_workers_(n_common_threads), io_task_workers_(n_io_threads) {
   }
   ~MultiThreadEnginePooled() { Terminate(); }
-  virtual ResourceHandle NewResource() override;
+  virtual ResourceHandle NewResource(const std::string &name = "") override;
   virtual void PushToExecute(OperationHandle opr) override;
   virtual void Terminate() override;
 
@@ -252,12 +234,11 @@ private:
   ThreadQueueBlock<ThreadedOperation> io_task_workers_;
 };
 
-ResourceHandle MultiThreadEnginePooled::NewResource() {
+ResourceHandle MultiThreadEnginePooled::NewResource(const std::string &name) {
   ThreadedResource::Dispatcher dispatcher = [this](OperationHandle opr) {
-    DLOG(INFO) << "dispatch using PushToExecute";
     PushToExecute(opr);
   };
-  return std::make_shared<ThreadedResource>(dispatcher);
+  return std::make_shared<ThreadedResource>(dispatcher, name);
 }
 
 void MultiThreadEnginePooled::Terminate() {
@@ -271,12 +252,12 @@ void MultiThreadEnginePooled::Terminate() {
 
 void MultiThreadEnginePooled::PushToExecute(OperationHandle opr) {
   auto ptr = opr->Cast<ThreadedOperation>();
+  DLOG(INFO) << "run task " << opr->Cast<ThreadedOperation>()->name;
+  DLOG(INFO) << "queue size " << common_task_workers_.task_queue.Size();
   if (ptr->ctx.property == kCPU_GPU_Copy ||
       ptr->ctx.property == kGPU_CPU_Copy) {
-    DLOG(INFO) << "io task queue get a task";
     io_task_workers_.task_queue.Push(opr);
   } else {
-    DLOG(INFO) << "common task queue get a task";
     common_task_workers_.task_queue.Push(opr);
   }
 }
