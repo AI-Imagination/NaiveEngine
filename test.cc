@@ -5,8 +5,8 @@
 #include <string>
 #include <thread>
 
-#include "glog/logging.h"
-#include "gtest/gtest.h"
+#include <glog/logging.h>
+#include <gtest/gtest.h>
 
 #include "engine.h"
 #include "engine_impl.h"
@@ -260,4 +260,9 @@ TEST_F(MultiThreadEnginePooledTester, CreazyTest) {
     DLOG(INFO) << var->Cast<ThreadedResource>()->debug_string();
   }
   engine->WaitForAllFinished();
+}
+
+int main(int argc, char **argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

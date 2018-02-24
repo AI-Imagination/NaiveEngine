@@ -3,6 +3,7 @@
 #include <glog/logging.h>
 #include <memory>
 #include <sstream>
+#include <mutex>
 #include <type_traits>
 
 #include "engine.h"
@@ -49,8 +50,8 @@ void ThreadedResource::ProcessQueueFront() {
 #if ENGINE_DEBUG
   if (!queue_.empty()) {
     if (queue_.front().is_write) {
-      CHECK(pending_read_count_.load() >= 0)
-          << "value: " << pending_read_count_;
+      CHECK(pending_read_count_.load() >= 0) << "value: "
+                                             << pending_read_count_;
     }
   }
 #endif
@@ -234,8 +235,8 @@ template <typename OprType> struct ThreadQueueBlock {
           while (true) {
             bool suc = task_queue.Pop(&o);
             if (!suc) {
-              DLOG(WARNING)
-                  << "thread " << std::this_thread::get_id() << " stop ...";
+              DLOG(WARNING) << "thread " << std::this_thread::get_id()
+                            << " stop ...";
               return;
             }
             // DLOG(INFO) << "queue.size: " << task_queue.Size();

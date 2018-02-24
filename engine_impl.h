@@ -3,6 +3,8 @@
 #include <deque>
 #include <gtest/gtest_prod.h>
 #include <thread>
+#include <mutex>
+#include <atomic>
 
 #include "engine.h"
 
@@ -176,7 +178,7 @@ public:
   const std::string &name() const { return name_; }
 
 protected:
-  template void ProcessQueueFront();
+  void ProcessQueueFront();
   friend class ThreadedResourceTestHelper;
 
 private:
