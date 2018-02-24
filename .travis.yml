@@ -1,0 +1,31 @@
+language: cpp
+cache:
+  - ccache
+sudo: required
+dist: trusty
+
+os:
+  - linux
+
+env:
+  - JOB=check_style
+  - JOB=test
+
+addons:
+  apt:
+    packages:
+      - git
+      - clang-format-3.8
+      - ccache
+
+before_install:
+  - if [[ "$JOB" == "check_style" ]]; then sudo ln -s /usr/bin/clang-format-3.8 /usr/bin/clang-format; sudo pip install pre-commit flake8; fi
+
+script:
+  - if [[ "$JOB" == "check_style" ]]; then .travis/check_style.sh; fi
+  - if [[ "$JOB" == "test" ]]; then /bin/bash .travis/tests.sh; fi
+
+notifications:
+  email:
+    on_success: change
+    on_failure: always
