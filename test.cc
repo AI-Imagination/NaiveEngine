@@ -16,7 +16,7 @@
 using namespace engine;
 
 class DebugEngineTester : public ::testing::Test {
-protected:
+ protected:
   virtual void SetUp() {
     EngineProperty prop;
     engine = CreateEngine("DebugEngine", prop);
@@ -61,8 +61,7 @@ TEST(task_queue, multithread) {
     while (true) {
       int task;
       bool flag = task_queue.Pop(&task);
-      if (!flag)
-        return;
+      if (!flag) return;
       count++;
       DLOG(INFO) << task;
     }
@@ -77,7 +76,7 @@ TEST(task_queue, multithread) {
 }
 
 class ThreadedResourceTester : public ::testing::Test {
-protected:
+ protected:
   virtual void SetUp() {
     EngineProperty prop;
     prop.num_cpu_threads = 2;
@@ -129,7 +128,7 @@ TEST_F(ThreadedResourceTester, push_write) {
 }
 
 class MultiThreadEnginePooledTester : public ::testing::Test {
-protected:
+ protected:
   virtual void SetUp() {
     EngineProperty prop;
     prop.num_cpu_threads = 2;
@@ -182,7 +181,7 @@ TEST_F(MultiThreadEnginePooledTester, PushAsync_Order) {
     LOG(INFO) << "async fn run";
     cb();
   };
-  profile::Profiler::Get()->Clear(); // functions are
+  profile::Profiler::Get()->Clear();  // functions are
   //   func0: A = B + 1
   //   func1: C = A + 1
   //   func2: D = B + A

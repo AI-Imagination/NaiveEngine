@@ -55,7 +55,7 @@ struct CallbackOnComplete {
 };
 
 class Engine {
-public:
+ public:
   using AsyncFn = std::function<void(RunContext, CallbackOnComplete)>;
   using SyncFn = std::function<void(RunContext)>;
 
@@ -76,10 +76,10 @@ public:
                         const std::vector<ResourceHandle> &write_res) = 0;
 
   // Create a new operation.
-  virtual OperationHandle
-  NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res,
-               const std::string &name = "") = 0;
+  virtual OperationHandle NewOperation(
+      AsyncFn fn, const std::vector<ResourceHandle> &read_res,
+      const std::vector<ResourceHandle> &write_res,
+      const std::string &name = "") = 0;
   // Create a new Resource.
   virtual ResourceHandle NewResource(const std::string &name = "") = 0;
 
@@ -103,4 +103,4 @@ struct EngineProperty {
 
 std::shared_ptr<Engine> CreateEngine(const std::string &kind,
                                      EngineProperty prop);
-} // namespace engine
+}  // namespace engine

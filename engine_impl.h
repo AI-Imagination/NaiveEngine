@@ -1,10 +1,10 @@
 #pragma once
 
-#include <deque>
 #include <gtest/gtest_prod.h>
-#include <thread>
-#include <mutex>
 #include <atomic>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 #include "engine.h"
 
@@ -15,7 +15,8 @@ struct Resource {
   Resource() {}
   virtual ~Resource() {}
 #endif
-  template <typename T> inline T *Cast() {
+  template <typename T>
+  inline T *Cast() {
     static_assert(std::is_base_of<Resource, T>::value,
                   "should be inherinted from Resource");
 #ifdef NDEBUG
@@ -33,7 +34,8 @@ struct Operation {
   Operation() {}
   virtual ~Operation() {}
 #endif
-  template <typename T> inline T *Cast() {
+  template <typename T>
+  inline T *Cast() {
     static_assert(std::is_base_of<Operation, T>::value,
                   "should be inherinted from Operation");
 #ifdef NDEBUG
@@ -49,7 +51,7 @@ struct Operation {
 
 // A simple engine without thread pool, just for debug.
 class DebugEngine : public Engine {
-public:
+ public:
   DebugEngine(const std::string &name = "debug engine") : name_(name) {}
 
   struct DebugOpr : public Operation {
@@ -62,10 +64,9 @@ public:
     opr->Cast<DebugOpr>()->fn(ctx, cb);
   }
 
-  virtual void
-  PushAsync(AsyncFn fn, RunContext ctx,
-            const std::vector<ResourceHandle> &read_res,
-            const std::vector<ResourceHandle> &write_res) override {
+  virtual void PushAsync(
+      AsyncFn fn, RunContext ctx, const std::vector<ResourceHandle> &read_res,
+      const std::vector<ResourceHandle> &write_res) override {
     auto opr = NewOperation(fn, read_res, write_res);
     auto cb = CreateCompleteCallback(opr);
     fn(ctx, cb);
@@ -77,10 +78,10 @@ public:
     fn(ctx);
   }
 
-  virtual OperationHandle
-  NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res,
-               const std::string &name = "") override {
+  virtual OperationHandle NewOperation(
+      AsyncFn fn, const std::vector<ResourceHandle> &read_res,
+      const std::vector<ResourceHandle> &write_res,
+      const std::string &name = "") override {
     DLOG(INFO) << "DebugEngine new operation";
     return std::make_shared<DebugOpr>(fn);
   }
@@ -92,8 +93,8 @@ public:
 
   virtual void WaitForAllFinished() override {}
 
-  virtual void
-  WaitForResource(const std::vector<ResourceHandle> &res) override {}
+  virtual void WaitForResource(
+      const std::vector<ResourceHandle> &res) override {}
 
   virtual void Terminate() override {
     LOG(WARNING) << "DebugEngine terminated";
@@ -107,7 +108,7 @@ public:
     return CallbackOnComplete(opr, &fn, nullptr);
   }
 
-private:
+ private:
   std::string name_;
 };
 
@@ -138,7 +139,10 @@ struct ThreadedOperation : public Operation {
                     const std::vector<ResourceHandle> &read_res,
                     const std::vector<ResourceHandle> &write_res,
                     const std::string &name = "")
-      : engine(engine), fn(fn), read_res(read_res), write_res(write_res),
+      : engine(engine),
+        fn(fn),
+        read_res(read_res),
+        write_res(write_res),
         noready_resource_count_(read_res.size() + write_res.size()),
         name(name) {
     CHECK_GT(noready_resource_count_, 0)
@@ -147,13 +151,13 @@ struct ThreadedOperation : public Operation {
 
   friend class ThreadedOperationTestHelper;
 
-private:
+ private:
   // Number of resources that is not ready for this operation.
   std::atomic<int> noready_resource_count_{0};
 };
 
 class ThreadedOperationTestHelper {
-public:
+ public:
   int noready_resource_count(OperationHandle opr) {
     return opr->Cast<ThreadedOperation>()->noready_resource_count_;
   }
@@ -161,7 +165,7 @@ public:
 
 // A FIFO queue for a Resource, which records all the operation dependency.
 class ThreadedResource : public Resource {
-public:
+ public:
   using Dispatcher = std::function<void(OperationHandle)>;
 
   ThreadedResource(const Dispatcher &dispatcher, const std::string &name = "")
@@ -177,11 +181,11 @@ public:
 
   const std::string &name() const { return name_; }
 
-protected:
+ protected:
   void ProcessQueueFront();
   friend class ThreadedResourceTestHelper;
 
-private:
+ private:
   struct ResourceBlock {
     OperationHandle operation;
     bool is_write{false};
@@ -198,7 +202,7 @@ private:
 };
 
 class ThreadedResourceTestHelper {
-public:
+ public:
   int pending_read_count(ResourceHandle res) {
     return res->Cast<ThreadedResource>()->pending_read_count_;
   }
@@ -210,4 +214,4 @@ public:
   }
 };
 
-} // namespace engine
+}  // namespace engine

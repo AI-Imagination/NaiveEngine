@@ -1,10 +1,10 @@
 #pragma once
 
+#include <time.h>
 #include <memory>
 #include <queue>
 #include <sstream>
 #include <string>
-#include <time.h>
 
 namespace engine {
 namespace profile {
@@ -33,7 +33,7 @@ struct Action {
 
 // NOTE Profiler is not thread-safe.
 class Profiler {
-public:
+ public:
   Action &AddAction(const std::string &owner, OwnerType owner_type,
                     ActionType action_type);
 
@@ -60,7 +60,7 @@ public:
     return ss.str();
   }
 
-private:
+ private:
   std::vector<Action> queue_;
 };
 
@@ -75,5 +75,5 @@ inline Action &Profiler::AddAction(const std::string &owner,
   return action;
 }
 
-} // namespace profile
-} // namespace engine
+}  // namespace profile
+}  // namespace engine

@@ -1,9 +1,9 @@
+#include <glog/logging.h>
 #include <atomic>
 #include <deque>
-#include <glog/logging.h>
 #include <memory>
-#include <sstream>
 #include <mutex>
+#include <sstream>
 #include <type_traits>
 
 #include "engine.h"
@@ -56,14 +56,11 @@ void ThreadedResource::ProcessQueueFront() {
   }
 #endif
   DLOG(INFO) << "process queue front";
-  if (queue_.empty())
-    return;
+  if (queue_.empty()) return;
   // front is write, and more read operations is running
-  if (pending_read_count_ > 0 && queue_.front().is_write)
-    return;
+  if (pending_read_count_ > 0 && queue_.front().is_write) return;
   // a write operation is running and not finished.
-  if (pending_write_)
-    return;
+  if (pending_write_) return;
 
   DLOG(INFO) << "continue to check queue";
   // front is wirte operation
@@ -118,7 +115,7 @@ std::string ThreadedResource::debug_string() const {
 }
 
 class MultiThreadEngine : public Engine {
-public:
+ public:
   virtual void PushAsync(OperationHandle opr, RunContext ctx) override {
     DLOG(INFO) << "push a func " << opr->Cast<ThreadedOperation>()->name;
 #if USE_PROFILE
@@ -149,10 +146,10 @@ public:
     PushAsync(opr, ctx);
   }
 
-  virtual OperationHandle
-  NewOperation(AsyncFn fn, const std::vector<ResourceHandle> &read_res,
-               const std::vector<ResourceHandle> &write_res,
-               const std::string &name = "") override {
+  virtual OperationHandle NewOperation(
+      AsyncFn fn, const std::vector<ResourceHandle> &read_res,
+      const std::vector<ResourceHandle> &write_res,
+      const std::string &name = "") override {
     auto opr = std::make_shared<ThreadedOperation>(this, fn, read_res,
                                                    write_res, name);
     CHECK_EQ(opr->Cast<ThreadedOperation>()->engine, (void *)this);
@@ -166,8 +163,8 @@ public:
     DLOG(INFO) << "WaitForAllFinished done";
   }
 
-  virtual void
-  WaitForResource(const std::vector<ResourceHandle> &res) override {
+  virtual void WaitForResource(
+      const std::vector<ResourceHandle> &res) override {
     AsyncFn fn;
     // TODO
   }
@@ -198,7 +195,7 @@ public:
     return CallbackOnComplete(opr, &fn, (void *)engine);
   }
 
-protected:
+ protected:
   void inc_num_padding_tasks() {
     inc_count++;
     int i = num_pending_tasks_;
@@ -228,7 +225,8 @@ protected:
 // ----------------------------------------------------------------------------
 // Multi-thread Engine With Thread Pools
 // ----------------------------------------------------------------------------
-template <typename OprType> struct ThreadQueueBlock {
+template <typename OprType>
+struct ThreadQueueBlock {
   ThreadQueueBlock(int n_threads)
       : workers(n_threads, [this] {
           OperationHandle o;
@@ -256,16 +254,16 @@ template <typename OprType> struct ThreadQueueBlock {
 };
 
 class MultiThreadEnginePooled final : public MultiThreadEngine {
-public:
+ public:
   MultiThreadEnginePooled(int n_common_threads = 10, int n_io_threads = 1)
-      : common_task_workers_(n_common_threads), io_task_workers_(n_io_threads) {
-  }
+      : common_task_workers_(n_common_threads),
+        io_task_workers_(n_io_threads) {}
   ~MultiThreadEnginePooled() { Terminate(); }
   virtual ResourceHandle NewResource(const std::string &name = "") override;
   virtual void PushToExecute(OperationHandle opr) override;
   virtual void Terminate() override;
 
-private:
+ private:
   ThreadQueueBlock<ThreadedOperation> common_task_workers_;
   ThreadQueueBlock<ThreadedOperation> io_task_workers_;
 };
@@ -311,4 +309,4 @@ std::shared_ptr<Engine> CreateEngine(const std::string &kind,
   return nullptr;
 }
 
-}; // namespace engine
+};  // namespace engine
