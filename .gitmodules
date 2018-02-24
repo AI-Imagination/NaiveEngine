@@ -1,3 +1,3 @@
 [submodule "swiftcpp"]
 	path = swiftcpp
-	url = git@github.com:Superjomn/swiftcpp.git
+  url = https://github.com/Superjomn/swiftcpp.git
