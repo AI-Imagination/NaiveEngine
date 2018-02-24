@@ -1,11 +1,11 @@
 #pragma once
 
-#include <glog/logging.h>
 #include <iostream>
 #include <map>
 #include <memory>
 #include <string>
 #include <vector>
+#include <glog/logging.h>
 using namespace std;
 
 #define USE_PROFILE 1
